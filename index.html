@@ -213,6 +213,17 @@ body.calm .btn.glow { animation: none; box-shadow: 0 0 0 3px rgba(241, 217, 154,
 .coach { position: absolute; z-index: 8200; transform: translate(-50%, 8px); opacity: 0; transition: opacity .25s, transform .25s; padding: 14px 16px 12px; border-radius: 16px;
   background: #fbf7ee; color: #1f1a10; box-shadow: 0 12px 34px rgba(0, 0, 0, .5); border: 2px solid var(--gold); display: flex; flex-direction: column; gap: 10px; align-items: flex-end; pointer-events: auto; }
 .coach.on { opacity: 1; transform: translate(-50%, 0); }
+/* "Visa hur man spelar": ett genomskinligt lager som fångar trycken (ett tryck tar över) och en rad överst */
+.demoveil { position: absolute; inset: 0; z-index: 8600; cursor: pointer; }
+.demobanner { position: absolute; left: 50%; top: var(--demo-top, 60px); transform: translateX(-50%); display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px);
+  padding: 10px 18px; border-radius: 16px; background: rgba(4, 16, 10, .92); border: 1px solid var(--gold-2); color: var(--text); font-size: calc(16px * var(--ui)); font-weight: 600; box-shadow: 0 8px 22px rgba(0, 0, 0, .4); }
+.demobanner .ico { width: 1.3em; height: 1.3em; color: var(--gold-2); flex: none; }
+body.demoing #bar { opacity: 0; transition: opacity .3s; }
+.demoveil.bottom .demobanner { top: auto; bottom: var(--demo-bottom, 12px); min-height: calc(46px * var(--ui)); }
+.demoveil.side .demobanner { top: var(--demo-top, 4px); max-height: var(--demo-h, 44px); padding: 6px 14px; font-size: calc(14px * var(--ui)); }
+.coachbtns { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; align-self: stretch; }
+/* (bubblan är ljus: den vanliga knappen blir mörk text på vitt) */
+.coach .btn:not(.gold) { background: #fff; color: #1f1a10; border-color: rgba(156, 122, 47, .7); box-shadow: none; }
 .coach p { margin: 0; font-size: calc(16px * var(--ui)); line-height: 1.45; align-self: stretch; }
 
 /* ---------- Startskärmen ---------- */
@@ -4096,6 +4107,10 @@ const Play = (() => {
     }
     // går det inte att vinna längre: rutan med "Ångra tills det går att vinna" i stället för tipset
     if (r.lost && Game.noteLost()) return;
+    showHint(S, r);
+  };
+  // Visar ett tips på bordet: kortet lyser och gungar, målet får en guldram och en pil, texten visas och läses upp
+  function showHint(S, r) {
     hint = r;
     const op = r.ops[0];
     if (op.t === 'm') {
@@ -4121,6 +4136,59 @@ const Play = (() => {
     placeToasts(r);
     hint.toast = UI.toast(r.text, {kind: 'hint'});
     Voice.say(r.text);
+  }
+
+  /* ---------- Visa hur man spelar ---------- */
+  // Spelet gör några drag själv, långsamt: varje drag visas först som ett tips (och läses upp), sedan görs det.
+  // Ett tryck var som helst tar över. Dragen är vanliga drag (de går att ångra) och räknas som tips.
+  let demo = null;
+  P.demoRunning = () => !!demo;
+  P.stopDemo = () => { if (demo) demo.stop = true; };
+  P.demo = async (n = 4) => {
+    if (demo || !S_() || Engine.won(S_())) return 0;
+    const run = demo = {stop: false};
+    clearSel(); hideHint();
+    const veil = h('div', {class: 'demoveil', role: 'button', 'aria-label': 'Ta över'}, h('div', {class: 'demobanner'}, UI.iconEl('play'), h('span', {}, 'Spelet visar hur man gör. Tryck för att ta över.')));
+    veil.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); run.stop = true; });
+    $('scrTable').append(veil);
+    document.body.classList.add('demoing');
+    // raden står över knapparna (de används inte under visningen), på en liggande telefon över raden överst,
+    // så att den inte täcker några kort
+    const G = Table.geo();
+    if (G) {
+      veil.classList.add(G.side ? 'side' : 'bottom');
+      veil.style.setProperty('--demo-top', (G.sa.t + 3) + 'px');
+      veil.style.setProperty('--demo-bottom', (G.sa.b + Math.max(6, (G.barH - 52 * G.ui) / 2)) + 'px');
+      veil.style.setProperty('--demo-h', Math.max(40, G.hudH - 6) + 'px');
+    }
+    const wait = async ms => { const t0 = performance.now(); while (!run.stop && performance.now() - t0 < ms) await sleep(50); };
+    let done = 0;
+    try {
+      for (let i = 0; i < n && !run.stop; i++) {
+        for (let k = 0; k < 100 && Game.busy() && !run.stop; k++) await sleep(50);
+        const S = S_();
+        if (run.stop || !S || Engine.won(S) || UI.sheetOpen()) break;
+        const r = await HintWork.smart(S, Settings.auto);
+        if (run.stop || S_() !== S || !r.ops || r.lost) break;
+        Game.noteHint();
+        Sound.play('hint');
+        showHint(S, r);
+        // tid att titta (och lyssna) innan draget görs: längre i lugnt tempo
+        await wait(2600 * Math.max(1, Time.speed()));
+        if (run.stop || S_() !== S) break;
+        hideHint();
+        Game.move(r.ops);
+        done++;
+        await wait(700 * Math.max(1, Time.speed()));
+      }
+    } finally {
+      demo = null;
+      veil.remove();
+      document.body.classList.remove('demoing');
+      hideHint();
+    }
+    if (S_() && !Engine.won(S_()) && !UI.sheetOpen()) UI.toast(done ? 'Nu är det din tur!' : 'Du tar över.', {kind: 'hint'});
+    return done;
   };
   function placeToasts(r) {
     const G = Table.geo(), S = S_();
@@ -4207,7 +4275,11 @@ const Coach = (() => {
   function show(key, t) {
     const root = $('scrTable');
     if (!root || root.hidden) return;
-    bubble = h('div', {class: 'coach', role: 'status'}, h('p', {}, t.text), h('button', {type: 'button', class: 'btn small gold', onclick: () => { Sound.play('click'); hide(); }}, 'Jag förstår'));
+    // de första förklaringarna vid en ny patiens erbjuder också en visning ("Visa mig")
+    const canDemo = ['start', 'startPyr', 'startTp', 'startAces'].includes(key);
+    bubble = h('div', {class: 'coach', role: 'status'}, h('p', {}, t.text), h('div', {class: 'coachbtns'},
+      canDemo ? h('button', {type: 'button', class: 'btn small', onclick: () => { Sound.play('click'); hide(); Play.demo(4); }}, 'Visa mig') : null,
+      h('button', {type: 'button', class: 'btn small gold', onclick: () => { Sound.play('click'); hide(); }}, 'Jag förstår')));
     bubbleKey = key;
     root.append(bubble);
     place(t.anchor);
@@ -5199,6 +5271,7 @@ const Game = (() => {
       soundItem(item);
       return;
     }
+    if (cur && !cur.won) item('play', 'Visa hur man spelar', () => Play.demo(4));
     item('newdeal', 'Ny giv', () => G.newDeal());
     item('restart', 'Spela samma giv igen', async () => {
       if (cur && cur.moved && Settings.confirmNew && !(await UI.confirm('Börja om samma giv från början?', {yes: 'Börja om', no: 'Fortsätt spela'}))) return;
@@ -5238,7 +5311,11 @@ const Menu = (() => {
   const M = {};
   let screen = 'title';
 
+  // En ny version av spelet har tagit över (service workern): ladda om, men bara på startskärmen
+  const newVersion = () => typeof window !== 'undefined' && window.__pkNewVersion && !Game.active();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && screen === 'title' && !UI.sheetOpen() && newVersion()) location.reload(); });
   M.show = name => {
+    if (name === 'title' && newVersion()) { location.reload(); return; }
     screen = name;
     $('scrMenu').hidden = name === 'table';
     $('scrTable').hidden = name !== 'table';
@@ -5864,7 +5941,8 @@ const Help = (() => {
         'Vill du bestämma själv: dra kortet med fingret (eller musen) dit du vill ha det.',
         'I Inställningar kan du i stället välja att först trycka på kortet och sedan på platsen där det ska ligga.',
         'Går ett drag inte, skakar kortet lite och en rad förklarar varför.',
-        'Ett snabbt dubbeltryck räknas som ett tryck, så att inga kort flyttas av misstag.')),
+        'Ett snabbt dubbeltryck räknas som ett tryck, så att inga kort flyttas av misstag.',
+        ['Vill du se hur det går till: välj ', h('b', {}, 'Visa hur man spelar'), ' i menyn. Då gör spelet några drag själv, långsamt, och berättar vad det gör. Tryck var som helst för att ta över.'])),
       sec('Knapparna', UL(
         [h('b', {}, 'Ångra'), ' tar tillbaka det senaste draget. Du kan ångra hur många gånger du vill.'],
         [h('b', {}, 'Tips'), ' visar ett bra drag: kortet studsar och en pil visar vart. Tipset kan också läsas upp.'],
@@ -5977,7 +6055,8 @@ const Main = (() => {
     setLoad(1, 'Välkommen!');
     // en länk till en viss giv: #giv=klondike1-12345
     const m = /giv=([a-z]+)(\d?)-(\d+)/.exec(location.hash);
-    Menu.show('title');
+    // (startskärmen ritas redan när korten får sina bilder: har en giv hunnit börja under tiden står den kvar)
+    if (Menu.screen() === 'title' && !Game.active()) Menu.show('title');
     $('loading').classList.add('done');
     setTimeout(() => { const l = $('loading'); if (l) l.remove(); }, 700);
     if (typeof Lobby !== 'undefined' && Lobby.boot) Lobby.boot();
@@ -5996,6 +6075,16 @@ if (/[?&]debug\b/.test(location.search)) window.PK = {Game: typeof Game !== 'und
 Main.boot();
 })();
 </script>
-<script>if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});</script>
+<script>
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  const had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) window.__pkNewVersion = true; });
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const check = () => reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    setInterval(check, 30 * 60 * 1000);
+  }).catch(() => {});
+}
+</script>
 </body>
 </html>
