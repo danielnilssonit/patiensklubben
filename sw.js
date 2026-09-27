@@ -1,5 +1,5 @@
 // Patiensklubben: sparar spelet i webbläsaren så att det startar även utan internet
-const CACHE = 'patiens-7403ddef79';
+const CACHE = 'patiens-6efc8cd8b9';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
